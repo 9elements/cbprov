@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cbprov tests <cbprov@invalid>
+Date: Fri, 30 Oct 2026 13:40:50 +0100
+Subject: [PATCH] mb/emulation/qemu: build fixes for VPD and EFI option backend
+
+Test only, not for upstream. Lets the qemu boards build with
+SMBIOS_*_FROM_VPD (fw_cfg no longer defines the VPD provided SMBIOS
+hooks, and QEMU's fw_cfg SMBIOS tables are not used with VPD so the
+VPD values show up) and with USE_UEFI_VARIABLE_STORE on q35 (romstage
+reads options through a read-only boot device).
+---
+ src/drivers/emulation/qemu/fw_cfg.c               |  4 ++++
+ src/mainboard/emulation/qemu-i440fx/northbridge.c |  9 ++++++---
+ src/mainboard/emulation/qemu-q35/Makefile.mk      |  1 +
+ src/mainboard/emulation/qemu-q35/romstage_rw.c    | 12 ++++++++++++
+ 4 files changed, 23 insertions(+), 3 deletions(-)
+ create mode 100644 src/mainboard/emulation/qemu-q35/romstage_rw.c
+
+diff --git a/src/drivers/emulation/qemu/fw_cfg.c b/src/drivers/emulation/qemu/fw_cfg.c
+index 3947a54a110..b31a0878f8c 100644
+--- a/src/drivers/emulation/qemu/fw_cfg.c
++++ b/src/drivers/emulation/qemu/fw_cfg.c
+@@ -513,17 +513,21 @@ const char *smbios_mainboard_version(void)
+ 	return type1_version ?: CONFIG_MAINBOARD_VERSION;
+ }
+ 
++#if !CONFIG(SMBIOS_SERIAL_FROM_VPD)
+ const char *smbios_mainboard_serial_number(void)
+ {
+ 	fw_cfg_smbios_init();
+ 	return type1_serial_number ?: CONFIG_MAINBOARD_SERIAL_NUMBER;
+ }
++#endif
+ 
++#if !CONFIG(SMBIOS_UUID_FROM_VPD)
+ void smbios_system_set_uuid(u8 *uuid)
+ {
+ 	fw_cfg_smbios_init();
+ 	memcpy(uuid, type1_uuid, 16);
+ }
++#endif
+ #endif /* CONFIG(GENERATE_SMBIOS_TABLES) */
+ 
+ /*
+diff --git a/src/mainboard/emulation/qemu-i440fx/northbridge.c b/src/mainboard/emulation/qemu-i440fx/northbridge.c
+index 5c8636c8f07..4de84cadab5 100644
+--- a/src/mainboard/emulation/qemu-i440fx/northbridge.c
++++ b/src/mainboard/emulation/qemu-i440fx/northbridge.c
+@@ -202,9 +202,12 @@ static int qemu_get_smbios_data(struct device *dev, int *handle, unsigned long *
+ {
+ 	int len;
+ 
+-	len = fw_cfg_smbios_tables(handle, current);
+-	if (len != 0)
+-		return len;
++	/* QEMU's own tables would replace the VPD provided type 1/2 strings. */
++	if (!CONFIG(VPD)) {
++		len = fw_cfg_smbios_tables(handle, current);
++		if (len != 0)
++			return len;
++	}
+ 
+ 	len = qemu_get_smbios_data16(*handle, current);
+ 	len += qemu_get_smbios_data17(*handle+1, *handle, current);
+diff --git a/src/mainboard/emulation/qemu-q35/Makefile.mk b/src/mainboard/emulation/qemu-q35/Makefile.mk
+index ca0b246c611..8034d496280 100644
+--- a/src/mainboard/emulation/qemu-q35/Makefile.mk
++++ b/src/mainboard/emulation/qemu-q35/Makefile.mk
+@@ -3,6 +3,7 @@
+ bootblock-y += bootblock.c
+ 
+ romstage-y += ../qemu-i440fx/memmap.c
++romstage-$(CONFIG_SMMSTORE) += romstage_rw.c
+ 
+ postcar-y += ../qemu-i440fx/memmap.c
+ postcar-y += ../qemu-i440fx/exit_car.S
+diff --git a/src/mainboard/emulation/qemu-q35/romstage_rw.c b/src/mainboard/emulation/qemu-q35/romstage_rw.c
+new file mode 100644
+index 00000000000..03b12f9d83d
+--- /dev/null
++++ b/src/mainboard/emulation/qemu-q35/romstage_rw.c
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++#include <boot_device.h>
++
++/*
++ * romstage executes in place from the flash, so it must not put the pflash
++ * into command mode. Option reads (SMMSTORE) only need read access here.
++ */
++const struct region_device *boot_device_rw(void)
++{
++	return boot_device_ro();
++}

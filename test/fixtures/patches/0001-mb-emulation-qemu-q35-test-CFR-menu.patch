@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cbprov tests <cbprov@invalid>
+Date: Fri, 30 Oct 2026 13:36:21 +0100
+Subject: [PATCH] mb/emulation/qemu-q35: test CFR menu
+
+Test only, not for upstream. Adds three CFR options and prints their
+values via get_uint_option() so cbprov's e2e tests can check them on
+the serial console.
+---
+ src/mainboard/emulation/qemu-q35/Makefile.mk |  1 +
+ src/mainboard/emulation/qemu-q35/cfr.c       | 75 ++++++++++++++++++++
+ 2 files changed, 76 insertions(+)
+ create mode 100644 src/mainboard/emulation/qemu-q35/cfr.c
+
+diff --git a/src/mainboard/emulation/qemu-q35/Makefile.mk b/src/mainboard/emulation/qemu-q35/Makefile.mk
+index cba6b4ebc5a..ca0b246c611 100644
+--- a/src/mainboard/emulation/qemu-q35/Makefile.mk
++++ b/src/mainboard/emulation/qemu-q35/Makefile.mk
+@@ -11,6 +11,7 @@ ramstage-y += ../qemu-i440fx/memmap.c
+ ramstage-y += ../qemu-i440fx/northbridge.c
+ ramstage-y += ../qemu-i440fx/rom_media.c
+ ramstage-y += cpu.c
++ramstage-$(CONFIG_DRIVERS_OPTION_CFR) += cfr.c
+ 
+ all-y += ../qemu-i440fx/bootmode.c
+ all-y += memmap.c
+diff --git a/src/mainboard/emulation/qemu-q35/cfr.c b/src/mainboard/emulation/qemu-q35/cfr.c
+new file mode 100644
+index 00000000000..5215a04f05c
+--- /dev/null
++++ b/src/mainboard/emulation/qemu-q35/cfr.c
+@@ -0,0 +1,75 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++/* Test-only CFR menu used by cbprov's end-to-end tests. */
++
++#include <boot/coreboot_tables.h>
++#include <bootstate.h>
++#include <console/console.h>
++#include <drivers/option/cfr_frontend.h>
++#include <option.h>
++
++#define TEST_BOOL_DEFAULT	0
++#define TEST_ENUM_DEFAULT	1
++#define TEST_NUM_DEFAULT	42
++
++static const struct sm_object cbprov_test_bool = SM_DECLARE_BOOL({
++	.opt_name	= "cbprov_test_bool",
++	.ui_name	= "cbprov test bool",
++	.ui_helptext	= "Test boolean for cbprov",
++	.default_value	= TEST_BOOL_DEFAULT,
++});
++
++static const struct sm_object cbprov_test_enum = SM_DECLARE_ENUM({
++	.opt_name	= "cbprov_test_enum",
++	.ui_name	= "cbprov test enum",
++	.ui_helptext	= "Test enum for cbprov",
++	.default_value	= TEST_ENUM_DEFAULT,
++	.values		= (const struct sm_enum_value[]) {
++				{ "Alpha", 0 },
++				{ "Beta",  1 },
++				{ "Gamma", 2 },
++				SM_ENUM_VALUE_END,
++			},
++});
++
++static const struct sm_object cbprov_test_num = SM_DECLARE_NUMBER({
++	.opt_name	= "cbprov_test_num",
++	.ui_name	= "cbprov test number",
++	.ui_helptext	= "Test number for cbprov",
++	.default_value	= TEST_NUM_DEFAULT,
++	.min		= 0,
++	.max		= 100,
++	.step		= 1,
++});
++
++static struct sm_obj_form cbprov_test = {
++	.ui_name = "cbprov test",
++	.obj_list = (const struct sm_object *[]) {
++		&cbprov_test_bool,
++		&cbprov_test_enum,
++		&cbprov_test_num,
++		NULL
++	},
++};
++
++static struct sm_obj_form *sm_root[] = {
++	&cbprov_test,
++	NULL
++};
++
++void mb_cfr_setup_menu(struct lb_cfr *cfr_root)
++{
++	cfr_write_setup_menu(cfr_root, sm_root);
++}
++
++static void print_test_options(void *unused)
++{
++	printk(BIOS_INFO, "CBPROV-OPT cbprov_test_bool=%u\n",
++	       get_uint_option("cbprov_test_bool", TEST_BOOL_DEFAULT));
++	printk(BIOS_INFO, "CBPROV-OPT cbprov_test_enum=%u\n",
++	       get_uint_option("cbprov_test_enum", TEST_ENUM_DEFAULT));
++	printk(BIOS_INFO, "CBPROV-OPT cbprov_test_num=%u\n",
++	       get_uint_option("cbprov_test_num", TEST_NUM_DEFAULT));
++}
++
++BOOT_STATE_INIT_ENTRY(BS_PAYLOAD_LOAD, BS_ON_ENTRY, print_test_options, NULL);

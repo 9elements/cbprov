@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  STATICCHECK: honnef.co/go/tools/cmd/staticcheck@v0.8.2
+  SDK_IMAGE: coreboot/coreboot-sdk:2026-07-06_c165edb4ce
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Minimum from go.mod, and current (staticcheck needs the latest Go).
+        go: ['1.24.x', 'stable']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+      - name: gofmt
+        if: matrix.go == 'stable'
+        run: |
+          out=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+      - run: go vet ./...
+      - run: go vet -tags e2e ./test/...
+      - run: go test -race ./...
+      - name: staticcheck
+        if: matrix.go == 'stable'
+        run: |
+          go run "$STATICCHECK" ./...
+          go run "$STATICCHECK" -tags e2e ./test/...
+
+  fixtures:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture: [q35, q35-cbfsverify, q35-vboot, i440fx, aarch64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cache/coreboot
+            .cache/fixtures
+          key: fixture-${{ matrix.fixture }}-${{ hashFiles('test/fixtures/**', 'test/payload/**') }}
+          # A stale checkout and build dir still make the rebuild incremental.
+          restore-keys: fixture-${{ matrix.fixture }}-
+      - name: Free disk space for the SDK image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Build fixture
+        if: steps.cache.outputs.cache-hit != 'true'
+        # build.sh runs the coreboot build inside the coreboot-sdk image.
+        run: |
+          docker pull -q "$SDK_IMAGE"
+          test/fixtures/build.sh ${{ matrix.fixture }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: fixture-${{ matrix.fixture }}
+          path: |
+            .cache/fixtures/${{ matrix.fixture }}/
+            .cache/fixtures/tools/cbfstool
+            .cache/fixtures/tools/smmstoretool
+          if-no-files-found: error
+          include-hidden-files: true
+
+  e2e:
+    needs: fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-system-arm
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fixture-*
+          path: .cache/fixtures
+          merge-multiple: true
+      - name: Restore tool permissions
+        run: chmod +x .cache/fixtures/tools/*
+      - name: e2e
+        env:
+          CBPROV_FIXTURES: ${{ github.workspace }}/.cache/fixtures
+        run: go test -count=1 -tags e2e -v ./test/qemu/ ./test/e2e/
