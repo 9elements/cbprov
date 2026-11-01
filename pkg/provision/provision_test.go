@@ -256,3 +256,25 @@ func TestReplacePayloadAB(t *testing.T) {
 		t.Errorf("metadata hashes stale after replace (%v)", err)
 	}
 }
+
+func TestCommitOptionsNeedsBackend(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		ok     bool
+	}{
+		{"CONFIG_SMMSTORE=y\n", false},
+		{"CONFIG_SMMSTORE=y\nCONFIG_DRIVERS_EFI_VARIABLE_STORE=y\nCONFIG_USE_UEFI_VARIABLE_STORE=y\n", true},
+	} {
+		im := abImage(t, tc.config)
+		set, _, err := OpenOptions(im, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := set.SetRaw("boot_delay", 3); err != nil {
+			t.Fatal(err)
+		}
+		if err := CommitOptions(im, set); (err == nil) != tc.ok {
+			t.Errorf("config %q: err = %v", tc.config, err)
+		}
+	}
+}

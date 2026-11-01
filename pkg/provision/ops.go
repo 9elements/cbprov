@@ -96,6 +96,9 @@ func OpenOptions(im *image.Image, schemaOverride []byte) (*options.Set, string, 
 
 // CommitOptions writes the option changes back into the image.
 func CommitOptions(im *image.Image, set *options.Set) error {
+	if cfg := BuildConfig(im); len(cfg) > 0 && !cfg.Bool("USE_UEFI_VARIABLE_STORE") {
+		return errors.New("coreboot in this image does not read options from SMMSTORE (CONFIG_USE_UEFI_VARIABLE_STORE is not set)")
+	}
 	region, err := im.RegionData(options.Region)
 	if err != nil {
 		return err
