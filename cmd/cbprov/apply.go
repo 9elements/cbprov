@@ -27,7 +27,7 @@ func applyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			allowed := []string{"RO_VPD", "RW_VPD", options.Region, provision.ROCBFS}
+			allowed := append([]string{"RO_VPD", "RW_VPD", options.Region}, provision.CBFSRegions...)
 			return out.edit(args[0], allowed, func(im *image.Image) (provision.Warnings, error) {
 				return provision.Apply(im, spec, filepath.Dir(file), force)
 			})

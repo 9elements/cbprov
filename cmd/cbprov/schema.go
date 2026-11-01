@@ -59,7 +59,7 @@ func schemaCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return embedOut.edit(args[0], []string{provision.ROCBFS}, func(im *image.Image) (provision.Warnings, error) {
+			return embedOut.edit(args[0], provision.CBFSRegions, func(im *image.Image) (provision.Warnings, error) {
 				return provision.EmbedSchema(im, raw)
 			})
 		},

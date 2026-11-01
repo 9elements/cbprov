@@ -67,7 +67,7 @@ func payloadCmd() *cobra.Command {
 				return err
 			}
 			spec.Data = data
-			return out.edit(args[0], []string{provision.ROCBFS}, func(im *image.Image) (provision.Warnings, error) {
+			return out.edit(args[0], provision.CBFSRegions, func(im *image.Image) (provision.Warnings, error) {
 				return provision.ReplacePayload(im, spec)
 			})
 		},
@@ -95,7 +95,7 @@ type payloadInfo struct {
 
 func payloads(im *image.Image) ([]payloadInfo, error) {
 	var out []payloadInfo
-	for _, region := range []string{provision.ROCBFS, "FW_MAIN_A", "FW_MAIN_B"} {
+	for _, region := range []string{provision.ROCBFS, "COREBOOT_B", "FW_MAIN_A", "FW_MAIN_B"} {
 		if !im.HasRegion(region) {
 			continue
 		}

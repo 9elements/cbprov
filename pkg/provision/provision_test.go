@@ -2,12 +2,15 @@ package provision
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/linuxboot/fiano/pkg/fmap"
 
+	"github.com/9elements/cbprov/pkg/buildconfig"
+	"github.com/9elements/cbprov/pkg/cbfs"
 	"github.com/9elements/cbprov/pkg/efivars"
 	"github.com/9elements/cbprov/pkg/image"
 	"github.com/9elements/cbprov/pkg/options"
@@ -27,14 +30,14 @@ func (w *sliceWriter) Write(p []byte) (int, error) {
 
 func (w *sliceWriter) Seek(off int64, _ int) (int64, error) { w.off = off; return off, nil }
 
-// testImage has an FMAP, RO_VPD and an erased SMMSTORE but no CBFS.
-func testImage(t *testing.T) *image.Image {
+type testArea struct {
+	name      string
+	off, size uint32
+}
+
+func buildImage(t *testing.T, size int, areas []testArea) *image.Image {
 	t.Helper()
-	data := bytes.Repeat([]byte{0xff}, 512*1024)
-	areas := []struct {
-		name      string
-		off, size uint32
-	}{{"FMAP", 0x0, 0x1000}, {"RO_VPD", 0x4000, 0x4000}, {"SMMSTORE", 0x40000, 0x40000}}
+	data := bytes.Repeat([]byte{0xff}, size)
 	f := &fmap.FMap{Header: fmap.Header{VerMajor: 1, VerMinor: 1, Size: uint32(len(data)), NAreas: uint16(len(areas))}}
 	copy(f.Signature[:], "__FMAP__")
 	for _, a := range areas {
@@ -48,6 +51,45 @@ func testImage(t *testing.T) *image.Image {
 	im, err := image.Parse(data)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return im
+}
+
+// testImage has an FMAP, RO_VPD and an erased SMMSTORE but no CBFS.
+func testImage(t *testing.T) *image.Image {
+	return buildImage(t, 512*1024, []testArea{{"FMAP", 0x0, 0x1000}, {"RO_VPD", 0x4000, 0x4000}, {"SMMSTORE", 0x40000, 0x40000}})
+}
+
+// abImage is laid out like an AMD PSP A/B image: two RO CBFS whose metadata
+// hash anchors sit in separate BOOTBLOCK regions. config is the CBFS build config.
+func abImage(t *testing.T, config string) *image.Image {
+	t.Helper()
+	im := buildImage(t, 1<<20, []testArea{{"FMAP", 0x0, 0x1000}, {"BOOTBLOCK", 0x1000, 0x1000},
+		{"BOOTBLOCK_B", 0x2000, 0x1000}, {"SMMSTORE", 0x40000, 0x40000},
+		{"COREBOOT", 0x80000, 0x40000}, {"COREBOOT_B", 0xc0000, 0x40000}})
+	for _, bb := range []string{"BOOTBLOCK", "BOOTBLOCK_B"} {
+		b, _ := im.RegionData(bb)
+		copy(b[0x100:], append([]byte("\xadMdtHsh\x15\x00\x00\x00\x02"), make([]byte, 64)...)) // SHA-256 anchor
+	}
+	for _, region := range []string{"COREBOOT", "COREBOOT_B"} {
+		b, _ := im.RegionData(region)
+		// Empty CBFS as cbfstool creates it: one null file spanning the region.
+		copy(b, "LARCHIVE")
+		binary.BigEndian.PutUint32(b[8:], uint32(len(b)-28))
+		binary.BigEndian.PutUint32(b[12:], 0xffffffff)
+		binary.BigEndian.PutUint32(b[16:], 0)
+		binary.BigEndian.PutUint32(b[20:], 28)
+		clear(b[24:28])
+		fs, err := cbfs.Open(im, region)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fs.AddRaw(buildconfig.FileName, []byte(config), cbfs.CompressNone); err != nil {
+			t.Fatal(err)
+		}
+		if err := fs.AddPayloadFlat("fallback/payload", []byte("old payload"), 0x100000, 0x100000, cbfs.CompressNone); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return im
 }
@@ -167,4 +209,72 @@ func TestVPDOverflow(t *testing.T) {
 func vpdErased(b []byte) bool {
 	_, err := vpd.Decode(b)
 	return err == nil && bytes.Count(b, []byte{0xff}) == len(b)
+}
+
+func TestReplacePayloadAB(t *testing.T) {
+	im := abImage(t, "CONFIG_PSP_AB_RECOVERY=y\n")
+	orig := bytes.Clone(im.Data)
+	payload := bytes.Repeat([]byte("new payload "), 1000)
+	if _, err := ReplacePayload(im, PayloadSpec{Data: payload, Flat: true, LoadAddr: 0x200000, Entry: 0x200000}); err != nil {
+		t.Fatal(err)
+	}
+	for _, region := range []string{"COREBOOT", "COREBOOT_B"} {
+		fs, _ := cbfs.Open(im, region)
+		f, found, err := findFile(fs, "fallback/payload")
+		if err != nil || !found || len(f.Segments) == 0 || f.Segments[0].LoadAddr != 0x200000 {
+			t.Errorf("%s: payload not replaced: %+v %v", region, f, err)
+		}
+	}
+	var allowed []image.Region
+	for _, n := range CBFSRegions {
+		r, _ := im.Region(n)
+		allowed = append(allowed, r)
+	}
+	for i := range orig {
+		if orig[i] == im.Data[i] {
+			continue
+		}
+		inside := false
+		for _, r := range allowed {
+			inside = inside || (uint32(i) >= r.Offset && uint32(i) < r.Offset+r.Size)
+		}
+		if !inside {
+			t.Fatalf("byte 0x%x outside %v changed", i, CBFSRegions)
+		}
+	}
+	for _, bb := range []string{"BOOTBLOCK", "BOOTBLOCK_B"} {
+		r, _ := im.Region(bb)
+		if bytes.Equal(orig[r.Offset:r.Offset+r.Size], im.Data[r.Offset:r.Offset+r.Size]) {
+			t.Errorf("%s: metadata hash not updated", bb)
+		}
+	}
+	check, err := image.Parse(bytes.Clone(im.Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cbfs.UpdateMetadataHash(check); err != nil || !bytes.Equal(check.Data, im.Data) {
+		t.Errorf("metadata hashes stale after replace (%v)", err)
+	}
+}
+
+func TestCommitOptionsNeedsBackend(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		ok     bool
+	}{
+		{"CONFIG_SMMSTORE=y\n", false},
+		{"CONFIG_SMMSTORE=y\nCONFIG_DRIVERS_EFI_VARIABLE_STORE=y\nCONFIG_USE_UEFI_VARIABLE_STORE=y\n", true},
+	} {
+		im := abImage(t, tc.config)
+		set, _, err := OpenOptions(im, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := set.SetRaw("boot_delay", 3); err != nil {
+			t.Fatal(err)
+		}
+		if err := CommitOptions(im, set); (err == nil) != tc.ok {
+			t.Errorf("config %q: err = %v", tc.config, err)
+		}
+	}
 }

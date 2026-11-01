@@ -211,7 +211,7 @@ func printReport(r showReport) {
 	var rs []string
 	for _, rg := range r.Regions {
 		switch rg.Name {
-		case "RO_VPD", "RW_VPD", "SMMSTORE", "COREBOOT", "FW_MAIN_A", "FW_MAIN_B":
+		case "RO_VPD", "RW_VPD", "SMMSTORE", "COREBOOT", "COREBOOT_B", "FW_MAIN_A", "FW_MAIN_B":
 			s := rg.Name + " " + size(uint64(rg.Size))
 			if rg.Name == "COREBOOT" {
 				s += " (" + size(uint64(r.Image.CBFSFree)) + " free)"

@@ -23,7 +23,7 @@ type anchorContainer struct {
 
 var anchorContainers = []anchorContainer{
 	{cbfs: "COREBOOT", bootblock: "BOOTBLOCK"},
-	{cbfs: "COREBOOT_B", bootblock: "BOOTBLOCK_B", secondary: true}, // Intel Top Swap
+	{cbfs: "COREBOOT_B", bootblock: "BOOTBLOCK_B", secondary: true}, // Intel Top Swap, AMD PSP A/B recovery
 }
 
 // anchor is a struct metadata_hash_anchor inside the image data.
