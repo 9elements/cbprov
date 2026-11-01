@@ -19,6 +19,11 @@ import (
 // ROCBFS is the FMAP region of the read-only CBFS.
 const ROCBFS = "COREBOOT"
 
+// CBFSRegions are the FMAP regions a CBFS change may touch: the RO CBFS, its
+// copy COREBOOT_B (Intel Top Swap, AMD PSP A/B recovery) and the BOOTBLOCK
+// regions holding their metadata hash anchors.
+var CBFSRegions = []string{ROCBFS, "COREBOOT_B", "BOOTBLOCK", "BOOTBLOCK_B"}
+
 // KV is an ordered key/value pair from the command line or a provisioning file.
 type KV struct {
 	Key   string
@@ -192,7 +197,7 @@ type PayloadSpec struct {
 // ErrSigned is returned when a change would break a signature cbprov cannot renew.
 var ErrSigned = errors.New("image is signed")
 
-// ReplacePayload swaps a payload in the RO CBFS.
+// ReplacePayload swaps a payload in the RO CBFS and its COREBOOT_B copy.
 func ReplacePayload(im *image.Image, p PayloadSpec) (Warnings, error) {
 	var w Warnings
 	if p.Name == "" {
@@ -205,42 +210,20 @@ func ReplacePayload(im *image.Image, p PayloadSpec) (Warnings, error) {
 	if ver.Vboot && !p.Force {
 		return nil, fmt.Errorf("%w: vboot RW slots (FW_MAIN_A/B) present; payload changes need re-signing, which cbprov does not do yet (--force changes the RO CBFS only)", ErrSigned)
 	}
-	fs, err := cbfs.Open(im, ROCBFS)
-	if err != nil {
-		return nil, err
-	}
-	comp := cbfs.CompressLZMA
-	old, found, err := findFile(fs, p.Name)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		comp = PayloadCompression(old)
-	} else {
-		w.add("%s did not exist; adding it", p.Name)
-	}
-	if p.Compression != "" {
-		if comp, err = ParseCompression(p.Compression); err != nil {
-			return nil, err
-		}
-	}
 	// Only the ELF magic is checked: cbfstool accepts ELFs with broken section
 	// headers and so does the SELF converter, which reads program headers only.
 	if !p.Flat && !bytes.HasPrefix(p.Data, []byte(elf.ELFMAG)) {
 		return nil, errors.New("payload is not an ELF file (use --flat with --load and --entry for raw binaries)")
 	}
-	if found {
-		if err := fs.Remove(p.Name); err != nil {
+	// coreboot adds the payload to every RO CBFS (CBFS_REGIONS).
+	regions := []string{ROCBFS}
+	if im.HasRegion("COREBOOT_B") {
+		regions = append(regions, "COREBOOT_B")
+	}
+	for _, region := range regions {
+		if err := replacePayloadIn(im, region, p, &w); err != nil {
 			return nil, err
 		}
-	}
-	if p.Flat {
-		err = fs.AddPayloadFlat(p.Name, p.Data, p.LoadAddr, p.Entry, comp)
-	} else {
-		err = fs.AddPayloadELF(p.Name, p.Data, comp)
-	}
-	if err != nil {
-		return nil, err
 	}
 	if ver.MetadataHash {
 		if err := cbfs.UpdateMetadataHash(im); err != nil {
@@ -252,6 +235,37 @@ func ReplacePayload(im *image.Image, p PayloadSpec) (Warnings, error) {
 		w.add("only the RO CBFS was changed; vboot RW slots still boot the old payload")
 	}
 	return w, nil
+}
+
+func replacePayloadIn(im *image.Image, region string, p PayloadSpec, w *Warnings) error {
+	fs, err := cbfs.Open(im, region)
+	if err != nil {
+		return err
+	}
+	comp := cbfs.CompressLZMA
+	old, found, err := findFile(fs, p.Name)
+	if err != nil {
+		return err
+	}
+	if found {
+		comp = PayloadCompression(old)
+	} else {
+		w.add("%s did not exist in %s; adding it", p.Name, region)
+	}
+	if p.Compression != "" {
+		if comp, err = ParseCompression(p.Compression); err != nil {
+			return err
+		}
+	}
+	if found {
+		if err := fs.Remove(p.Name); err != nil {
+			return err
+		}
+	}
+	if p.Flat {
+		return fs.AddPayloadFlat(p.Name, p.Data, p.LoadAddr, p.Entry, comp)
+	}
+	return fs.AddPayloadELF(p.Name, p.Data, comp)
 }
 
 // EmbedSchema stores a CFR schema in the RO CBFS so later commands find it.
